@@ -1,10 +1,21 @@
 from fastapi import FastAPI, File, UploadFile
 from pydantic import BaseModel, Field
-from worker import process_media
+from worker import process_media_task
 from celery.result import AsyncResult
 from worker import celery_app
+from database import Report, engine, Base, SessionLocal
+from sqlalchemy.orm import Session
+from fastapi import Depends
 
+Base.metadata.create_all(bind=engine)
 app = FastAPI()
+
+def get_db():
+    db = SessionLocal()
+    try:     
+        yield db
+    finally: 
+        db.close()
 
 class MediaReport(BaseModel):
     filename: str
@@ -24,7 +35,7 @@ def check_status():
 
 @app.post("/analyze")
 async def analyze_media(file: UploadFile = File(...)):
-    task = process_media.delay(file.filename)
+    task = process_media_task.delay(file.filename)
     return {"message": "Order received! AI is processing...", "task_id": task.id}
 
 @app.get("/result/{task_id}")
@@ -35,3 +46,19 @@ async def get_result(task_id: str):
         return {"status": "complete", "result": task_result.result}
 
     return {"status": "processing"}
+
+@app.get("/history")
+def get_all_reports(db: Session = Depends(get_db)):
+    reports = db.query(Report).all()
+    
+    formatted_history = []
+    for report in reports:
+        formatted_history.append({
+            "task_id": report.task_id,
+            "filename": report.filename,
+            "prediction": report.prediction,
+            "confidence": report.confidence,
+            "created_at": report.created_at
+        })
+        
+    return {"total_reports": len(reports), "history": formatted_history}
